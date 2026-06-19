@@ -69,7 +69,7 @@ app.post("/voice", (req, res) => {
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="speech" action="/voice/respond" method="POST" speechTimeout="auto" language="en-IN">
+<Gather input="speech" action="/voice/respond" method="POST" speechTimeout="3" language="en-IN" speechModel="phone_call" enhanced="true">
     <Say voice="Polly.Aditi">${escapeXml(greeting)}</Say>
   </Gather>
   <Say voice="Polly.Aditi">We didn't hear anything. Goodbye.</Say>
