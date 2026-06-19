@@ -69,7 +69,7 @@ app.post("/voice", (req, res) => {
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-<Gather input="speech" action="/voice/respond" method="POST" speechTimeout="3" language="en-IN" speechModel="phone_call" enhanced="true">
+<Gather input="speech" action="/voice/respond" method="POST" speechTimeout="5" language="en-IN" speechModel="experimental_conversations" enhanced="true" profanityFilter="false">
     <Say voice="Polly.Aditi">${escapeXml(greeting)}</Say>
   </Gather>
   <Say voice="Polly.Aditi">We didn't hear anything. Goodbye.</Say>
@@ -105,7 +105,7 @@ app.post("/voice/respond", async (req, res) => {
 </Response>`
     : `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="speech" action="/voice/respond" method="POST" speechTimeout="3" language="en-IN" speechModel="phone_call" enhanced="true">
+  <Gather input="speech" action="/voice/respond" method="POST" speechTimeout="5" language="en-IN" speechModel="experimental_conversations" enhanced="true" profanityFilter="false">
     <Say voice="Polly.Aditi">${escapeXml(aiReply)}</Say>
   </Gather>
   <Say voice="Polly.Aditi">Goodbye.</Say>
