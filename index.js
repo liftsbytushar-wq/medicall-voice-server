@@ -82,7 +82,7 @@ wss.on("connection", (twilioWs) => {
 
   function connectDeepgram() {
     deepgramWs = new WebSocket(
-      "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-2&language=en-IN&smart_format=true&endpointing=400",
+      "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-2&language=multi&smart_format=true&endpointing=400",
       { headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` } }
     );
 
