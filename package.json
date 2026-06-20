@@ -1,14 +1,14 @@
 {
-  "name": "medicall-voice-server",
+  "name": "medicall-deepgram-voice-server",
   "version": "1.0.0",
-  "description": "Twilio voice webhook server for MediCall AI hospital agent",
+  "description": "Twilio + Deepgram streaming voice agent for MediCall AI",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "body-parser": "^1.20.2"
+    "ws": "^8.17.0"
   },
   "engines": {
     "node": ">=18.0.0"
