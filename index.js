@@ -56,20 +56,24 @@ async function askAI(conversation) {
   return data.choices?.[0]?.message?.content || "Sorry, could you repeat that?";
 }
 
-async function textToSpeech(text) {
-  const res = await fetch(
-    "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=mulaw&sample_rate=8000&container=none",
-    {
+async function askAI(conversation) {
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: {
-        Authorization: `Token ${DEEPGRAM_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text }),
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: conversation, max_tokens: 150 }),
+    });
+    const data = await res.json();
+    console.log("Groq raw response:", JSON.stringify(data));
+    if (!data.choices) {
+      console.error("Groq error response:", data.error || data);
+      return "I am having a technical issue, let me get someone to help you.";
     }
-  );
-  const buffer = await res.arrayBuffer();
-  return Buffer.from(buffer);
+    return data.choices[0].message.content;
+  } catch (err) {
+    console.error("Groq fetch failed:", err);
+    return "I am having a technical issue, let me get someone to help you.";
+  }
 }
 
 wss.on("connection", (twilioWs) => {
