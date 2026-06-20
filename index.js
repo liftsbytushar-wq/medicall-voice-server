@@ -1,39 +1,45 @@
-// MediCall AI — Twilio Voice Webhook Server
-// This server receives calls from Twilio, converts speech to text,
-// asks the AI agent for a response, and speaks it back to the caller.
+// MediCall AI — Twilio + Deepgram Streaming Voice Agent
+// Real-time speech-to-text (Deepgram) -> AI brain (Groq) -> text-to-speech (Deepgram Aura) -> back to caller
 
 const express = require("express");
-const bodyParser = require("body-parser");
+const http = require("http");
+const WebSocket = require("ws");
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: "/twilio" });
 
 const PORT = process.env.PORT || 3001;
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "PASTE_YOUR_DEEPGRAM_KEY_HERE";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "PASTE_YOUR_GROQ_KEY_HERE";
 
-// ─── System prompt for the hospital AI agent ─────────────────────────────────
 const SYSTEM_PROMPT = `You are MediCall AI, a professional hospital calling agent for City General Hospital, Mumbai.
 You help callers with: appointment booking, general hospital inquiries (OPD timings, departments, visiting hours),
 patient follow-ups, and lab result guidance.
-Be warm, concise — 1-3 short sentences max, since this is a PHONE CALL and will be read aloud.
-For emergencies (chest pain, breathing difficulty, severe bleeding, etc.), immediately advise the caller
-to hang up and dial 112 for an ambulance, then offer to also note it down for the hospital.
+Be warm, concise — 1-2 short sentences max, since this is a PHONE CALL and will be spoken aloud.
+For emergencies (chest pain, breathing difficulty, severe bleeding), immediately advise the caller
+to hang up and dial 112 for an ambulance.
 Hospital info: OPD hours 8am-8pm, Emergency 24/7.
-Doctors available: Dr. Priya Sharma (Cardiology, Mon/Wed/Fri), Dr. Rajan Mehta (Orthopedics, Tue/Thu/Sat),
+Doctors: Dr. Priya Sharma (Cardiology, Mon/Wed/Fri), Dr. Rajan Mehta (Orthopedics, Tue/Thu/Sat),
 Dr. Anil Kumar (Neurology), Dr. Fatima Shaikh (Dermatology).
-Keep responses SHORT and natural for speech — avoid bullet points, lists, or long sentences.`;
+Keep responses SHORT and natural for speech.`;
 
-// In-memory conversation store, keyed by Twilio CallSid
-const conversations = {};
+app.post("/voice", (req, res) => {
+  const host = req.headers.host;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://${host}/twilio" />
+  </Connect>
+</Response>`;
+  res.type("text/xml").send(twiml);
+});
 
-// ─── Helper: ask Groq for a reply ─────────────────────────────────────────────
-async function askAI(callSid, userText) {
-  if (!conversations[callSid]) {
-    conversations[callSid] = [{ role: "system", content: SYSTEM_PROMPT }];
-  }
-  conversations[callSid].push({ role: "user", content: userText });
+app.get("/", (req, res) => {
+  res.send("MediCall AI Deepgram voice server is running.");
+});
 
+async function askAI(conversation) {
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -42,90 +48,121 @@ async function askAI(callSid, userText) {
     },
     body: JSON.stringify({
       model: "llama-3.3-70b-versatile",
-      messages: conversations[callSid],
-      max_tokens: 200,
+      messages: conversation,
+      max_tokens: 150,
     }),
   });
-
   const data = await res.json();
-  const reply = data.choices?.[0]?.message?.content || "I'm sorry, I didn't catch that. Could you repeat?";
-  conversations[callSid].push({ role: "assistant", content: reply });
-  return reply;
+  return data.choices?.[0]?.message?.content || "Sorry, could you repeat that?";
 }
 
-// ─── Escape special XML characters for TwiML <Say> ───────────────────────────
-function escapeXml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+async function textToSpeech(text) {
+  const res = await fetch(
+    "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=mulaw&sample_rate=8000&container=none",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${DEEPGRAM_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text }),
+    }
+  );
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer);
 }
 
-// ─── Incoming call — first webhook Twilio hits ───────────────────────────────
-app.post("/voice", (req, res) => {
-  const greeting = "Thank you for calling City General Hospital. This is MediCall AI. How can I help you today?";
+wss.on("connection", (twilioWs) => {
+  console.log("Twilio stream connected");
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-<Gather input="speech" action="/voice/respond" method="POST" speechTimeout="5" language="en-IN" speechModel="experimental_conversations" enhanced="true" profanityFilter="false">
-    <Say voice="Polly.Aditi">${escapeXml(greeting)}</Say>
-  </Gather>
-  <Say voice="Polly.Aditi">We didn't hear anything. Goodbye.</Say>
-</Response>`;
+  let streamSid = null;
+  let conversation = [{ role: "system", content: SYSTEM_PROMPT }];
+  let deepgramWs = null;
+  let isSpeaking = false;
 
-  res.type("text/xml").send(twiml);
-});
+  function connectDeepgram() {
+    deepgramWs = new WebSocket(
+      "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-2&language=en-IN&smart_format=true&endpointing=400",
+      { headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` } }
+    );
 
-// ─── Handles each turn of the conversation ───────────────────────────────────
-app.post("/voice/respond", async (req, res) => {
-  const callSid = req.body.CallSid;
-  const speechResult = req.body.SpeechResult || "";
+    deepgramWs.on("open", () => console.log("Deepgram connected"));
 
-  let aiReply;
-  try {
-    aiReply = speechResult
-      ? await askAI(callSid, speechResult)
-      : "Sorry, could you say that again?";
-  } catch (err) {
-    console.error("AI error:", err);
-    aiReply = "Sorry, I'm having trouble right now. Please try again later.";
+    deepgramWs.on("message", async (msg) => {
+      const data = JSON.parse(msg);
+      const transcript = data.channel?.alternatives?.[0]?.transcript;
+      const isFinal = data.is_final;
+
+      if (transcript && isFinal && transcript.trim().length > 0 && !isSpeaking) {
+        console.log("Patient said:", transcript);
+        conversation.push({ role: "user", content: transcript });
+
+        isSpeaking = true;
+        const reply = await askAI(conversation);
+        conversation.push({ role: "assistant", content: reply });
+        console.log("AI reply:", reply);
+
+        const audioBuffer = await textToSpeech(reply);
+        sendAudioToTwilio(audioBuffer);
+        isSpeaking = false;
+      }
+    });
+
+    deepgramWs.on("error", (err) => console.error("Deepgram error:", err));
   }
 
-  // Check if AI wants to end the call (simple heuristic)
-  const lower = aiReply.toLowerCase();
-  const shouldEnd = lower.includes("goodbye") || lower.includes("have a great day") || lower.includes("take care");
+  function sendAudioToTwilio(buffer) {
+    const chunkSize = 320;
+    for (let i = 0; i < buffer.length; i += chunkSize) {
+      const chunk = buffer.slice(i, i + chunkSize);
+      twilioWs.send(
+        JSON.stringify({
+          event: "media",
+          streamSid,
+          media: { payload: chunk.toString("base64") },
+        })
+      );
+    }
+  }
 
-  const twiml = shouldEnd
-    ? `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Aditi">${escapeXml(aiReply)}</Say>
-  <Hangup/>
-</Response>`
-    : `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Gather input="speech" action="/voice/respond" method="POST" speechTimeout="5" language="en-IN" speechModel="experimental_conversations" enhanced="true" profanityFilter="false">
-    <Say voice="Polly.Aditi">${escapeXml(aiReply)}</Say>
-  </Gather>
-  <Say voice="Polly.Aditi">Goodbye.</Say>
-</Response>`;
+  async function speakGreeting() {
+    const greeting = "Thank you for calling City General Hospital. This is MediCall AI. How can I help you today?";
+    conversation.push({ role: "assistant", content: greeting });
+    const audioBuffer = await textToSpeech(greeting);
+    sendAudioToTwilio(audioBuffer);
+  }
 
-  res.type("text/xml").send(twiml);
+  twilioWs.on("message", async (message) => {
+    const data = JSON.parse(message);
+
+    switch (data.event) {
+      case "start":
+        streamSid = data.start.streamSid;
+        console.log("Stream started:", streamSid);
+        connectDeepgram();
+        setTimeout(speakGreeting, 500);
+        break;
+
+      case "media":
+        if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
+          const audio = Buffer.from(data.media.payload, "base64");
+          deepgramWs.send(audio);
+        }
+        break;
+
+      case "stop":
+        console.log("Stream stopped");
+        if (deepgramWs) deepgramWs.close();
+        break;
+    }
+  });
+
+  twilioWs.on("close", () => {
+    console.log("Twilio stream closed");
+    if (deepgramWs) deepgramWs.close();
+  });
 });
 
-// ─── Cleanup conversation when call ends (Twilio status callback, optional) ──
-app.post("/voice/status", (req, res) => {
-  const callSid = req.body.CallSid;
-  delete conversations[callSid];
-  res.sendStatus(200);
-});
-
-// ─── Health check ─────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
-  res.send("MediCall AI voice server is running.");
-});
-
-app.listen(PORT, () => {
-  console.log(`MediCall AI voice server running on port ${PORT}`);
+server.listen(PORT, () => {
+  console.log(`MediCall AI Deepgram voice server running on port ${PORT}`);
 });
